@@ -94,5 +94,6 @@ function StopBringMobs()
     IsBringing = false
     BringCFrame = nil
 end
-StartBringMobs("Bandit")
+StartBringMobs("Monkey")
+
 
