@@ -1,105 +1,98 @@
-local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
-local LocalPlayer = Players.LocalPlayer
-local EnemiesFolder = workspace:WaitForChild("Enemies")
+local Enemies = workspace:WaitForChild("Enemies")
 
-local activeBrings = {}
-local anchorMob = nil
+local BringCFrame = nil
+local ActiveBrings = {}
+local IsBringing = false
 
--- получить RootPart моба
-local function getMobRoot(mob)
-    return mob:FindFirstChild("HumanoidRootPart")
+-- создать привязку моба
+local function AttachMob(mob)
+    if ActiveBrings[mob] then return end
+    local root = mob:FindFirstChild("HumanoidRootPart")
+    if not root then return end
+
+    local att = Instance.new("Attachment")
+    att.Parent = root
+
+    local align = Instance.new("AlignPosition")
+    align.MaxForce = 999999999
+    align.Responsiveness = 200
+    align.ApplyAtCenterOfMass = true
+    align.Mode = Enum.PositionAlignmentMode.OneAttachment
+    align.Attachment0 = att
+    align.Parent = root
+
+    ActiveBrings[mob] = {att = att, align = align}
 end
 
--- получить ближайшего моба к игроку
-local function getClosestMob(enemyName)
-    local char = LocalPlayer.Character
-    local root = char and char:FindFirstChild("HumanoidRootPart")
-    if not root then return nil end
-
-    local closest, dist = nil, math.huge
-    for _, mob in ipairs(EnemiesFolder:GetChildren()) do
-        if mob.Name == enemyName and mob:FindFirstChild("Humanoid") and mob.Humanoid.Health > 0 then
-            local mobRoot = getMobRoot(mob)
-            if mobRoot then
-                local mag = (mobRoot.Position - root.Position).Magnitude
-                if mag < dist then
-                    dist = mag
-                    closest = mob
-                end
-            end
-        end
-    end
-    return closest
-end
-
--- притягивание всех мобов к якорю
-local function bringMobs(enemyName)
-    task.spawn(function()
-        while anchorMob and anchorMob.Parent == EnemiesFolder and anchorMob.Humanoid.Health > 0 do
-            local anchorRoot = getMobRoot(anchorMob)
-            if not anchorRoot then break end
-
-            for _, mob in ipairs(EnemiesFolder:GetChildren()) do
-                if mob ~= anchorMob and mob.Name == enemyName and mob:FindFirstChild("Humanoid") and mob.Humanoid.Health > 0 then
-                    if not activeBrings[mob] then
-                        local mobRoot = getMobRoot(mob)
-                        if mobRoot then
-                            local att0 = Instance.new("Attachment")
-                            att0.Parent = mobRoot
-
-                            local align = Instance.new("AlignPosition")
-                            align.Parent = mobRoot
-                            align.MaxForce = 9999999
-                            align.Responsiveness = 200
-                            align.Attachment0 = att0
-                            align.Mode = Enum.PositionAlignmentMode.OneAttachment
-                            align.ApplyAtCenterOfMass = true
-
-                            activeBrings[mob] = {att = att0, align = align}
-                        end
-                    end
-
-                    -- обновляем цель
-                    local stuff = activeBrings[mob]
-                    if stuff and stuff.align then
-                        stuff.align.Position = anchorRoot.Position
-                    end
-                end
-            end
-            RunService.Heartbeat:Wait()
-        end
-
-        -- если якорь умер → очистка
-        for mob, stuff in pairs(activeBrings) do
-            if stuff.att then stuff.att:Destroy() end
-            if stuff.align then stuff.align:Destroy() end
-        end
-        activeBrings = {}
-        anchorMob = nil
-    end)
-end
-
--- запуск
-function StartBringMobs(enemyName)
-    if not anchorMob then
-        anchorMob = getClosestMob(enemyName)
-        if anchorMob then
-            bringMobs(enemyName)
-        else
-            warn("Нет мобов с именем " .. enemyName)
-        end
-    end
-end
-
--- остановка
-function StopBringMobs()
-    anchorMob = nil
-    for mob, stuff in pairs(activeBrings) do
+-- чистка привязки
+local function DetachMob(mob)
+    local stuff = ActiveBrings[mob]
+    if stuff then
         if stuff.att then stuff.att:Destroy() end
         if stuff.align then stuff.align:Destroy() end
+        ActiveBrings[mob] = nil
     end
-    activeBrings = {}
 end
 
-StartBringMobs("Bandit")
+-- главный цикл
+local function BringLoop(enemyName)
+    IsBringing = true
+    while IsBringing and BringCFrame do
+        for _, mob in ipairs(Enemies:GetChildren()) do
+            if mob.Name == enemyName and mob:FindFirstChild("Humanoid") and mob.Humanoid.Health > 0 then
+                AttachMob(mob)
+                local stuff = ActiveBrings[mob]
+                if stuff and stuff.align then
+                    stuff.align.Position = BringCFrame.Position
+                end
+            else
+                DetachMob(mob)
+            end
+        end
+        RunService.Heartbeat:Wait()
+    end
+    -- очистка после выхода
+    for mob, _ in pairs(ActiveBrings) do
+        DetachMob(mob)
+    end
+end
+
+-- публичные функции
+function StartBringMobs(enemyName)
+    local anchor = nil
+    local closestDist = math.huge
+    local player = game.Players.LocalPlayer
+    local root = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+    if not root then return end
+
+    -- выбираем ближайшего моба
+    for _, mob in ipairs(Enemies:GetChildren()) do
+        if mob.Name == enemyName and mob:FindFirstChild("Humanoid") and mob.Humanoid.Health > 0 then
+            local mobRoot = mob:FindFirstChild("HumanoidRootPart")
+            if mobRoot then
+                local dist = (mobRoot.Position - root.Position).Magnitude
+                if dist < closestDist then
+                    closestDist = dist
+                    anchor = mobRoot
+                end
+            end
+        end
+    end
+
+    if anchor then
+        BringCFrame = anchor.CFrame
+        task.spawn(function()
+            BringLoop(enemyName)
+        end)
+    else
+        warn("Нет подходящих мобов")
+    end
+end
+
+function StopBringMobs()
+    IsBringing = false
+    BringCFrame = nil
+end
+
+StartBringMobs(Monkey)
