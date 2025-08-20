@@ -1,11 +1,14 @@
 local RunService = game:GetService("RunService")
+local Players = game:GetService("Players")
+local LocalPlayer = Players.LocalPlayer
 local Enemies = workspace:WaitForChild("Enemies")
 
-local BringCFrame = nil
 local ActiveBrings = {}
 local IsBringing = false
+local BringPoint = nil
+local BRING_RADIUS = 400 -- можно менять слайдером
 
--- создать привязку моба
+-- создать привязку
 local function AttachMob(mob)
     if ActiveBrings[mob] then return end
     local root = mob:FindFirstChild("HumanoidRootPart")
@@ -35,66 +38,100 @@ local function DetachMob(mob)
     end
 end
 
+-- очистка всех
+local function ClearAll()
+    for mob, _ in pairs(ActiveBrings) do
+        DetachMob(mob)
+    end
+    ActiveBrings = {}
+    if BringPoint then
+        BringPoint:Destroy()
+        BringPoint = nil
+    end
+end
+
 -- главный цикл
 local function BringLoop(enemyName)
     IsBringing = true
-    while IsBringing and BringCFrame do
+    local startTime = tick()
+
+    while IsBringing and BringPoint do
         for _, mob in ipairs(Enemies:GetChildren()) do
-            if mob.Name == enemyName and mob:FindFirstChild("Humanoid") and mob.Humanoid.Health > 0 then
-                AttachMob(mob)
-                local stuff = ActiveBrings[mob]
-                if stuff and stuff.align then
-                    stuff.align.Position = BringCFrame.Position
+            if mob:FindFirstChild("Humanoid") and mob.Humanoid.Health > 0 then
+                if mob.Name == enemyName then
+                    local root = mob:FindFirstChild("HumanoidRootPart")
+                    if root then
+                        local dist = (root.Position - BringPoint.Position).Magnitude
+                        if dist <= BRING_RADIUS then
+                            AttachMob(mob)
+                            local stuff = ActiveBrings[mob]
+                            if stuff and stuff.align then
+                                stuff.align.Position = BringPoint.Position
+                            end
+                        else
+                            DetachMob(mob)
+                        end
+                    end
                 end
             else
                 DetachMob(mob)
             end
         end
+
+        -- 5 секунд держим мобов
+        if tick() - startTime >= 5 then
+            StopBringMobs()
+            break
+        end
+
         RunService.Heartbeat:Wait()
-    end
-    -- очистка после выхода
-    for mob, _ in pairs(ActiveBrings) do
-        DetachMob(mob)
     end
 end
 
--- публичные функции
+-- публичная функция
 function StartBringMobs(enemyName)
-    local anchor = nil
-    local closestDist = math.huge
-    local player = game.Players.LocalPlayer
-    local root = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
-    if not root then return end
+    if IsBringing then StopBringMobs() end
 
-    -- выбираем ближайшего моба
+    local playerRoot = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+    if not playerRoot then return end
+
+    -- ищем ближайшего моба
+    local closestMob, closestDist
+    closestDist = math.huge
     for _, mob in ipairs(Enemies:GetChildren()) do
         if mob.Name == enemyName and mob:FindFirstChild("Humanoid") and mob.Humanoid.Health > 0 then
             local mobRoot = mob:FindFirstChild("HumanoidRootPart")
             if mobRoot then
-                local dist = (mobRoot.Position - root.Position).Magnitude
+                local dist = (mobRoot.Position - playerRoot.Position).Magnitude
                 if dist < closestDist then
                     closestDist = dist
-                    anchor = mobRoot
+                    closestMob = mobRoot
                 end
             end
         end
     end
 
-    if anchor then
-        BringCFrame = anchor.CFrame
+    if closestMob then
+        -- создаём опорную точку
+        BringPoint = Instance.new("Part")
+        BringPoint.Anchored = true
+        BringPoint.CanCollide = false
+        BringPoint.Transparency = 1
+        BringPoint.Size = Vector3.new(1,1,1)
+        BringPoint.CFrame = closestMob.CFrame
+        BringPoint.Parent = workspace
+
         task.spawn(function()
             BringLoop(enemyName)
         end)
     else
-        print("Нет подходящих мобов")
+        warn("Нет мобов")
     end
 end
 
 function StopBringMobs()
     IsBringing = false
-    BringCFrame = nil
+    ClearAll()
 end
-StartBringMobs("Monkey")
 
-
-
+StartBringMobs("Pirate")
