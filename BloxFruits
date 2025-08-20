@@ -1,226 +1,98 @@
---// Bring mobs to one sticky point ("magnet")
--- Вызов:  StartBringMobs("Bandit")   и   StopBringMobs()
-
-local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
-local Debris   = game:GetService("Debris")
+local Enemies = workspace:WaitForChild("Enemies")
 
-local LocalPlayer = Players.LocalPlayer
-local function getHRP()
-    local c = LocalPlayer.Character
-    return c and c:FindFirstChild("HumanoidRootPart")
-end
+local BringCFrame = nil
+local ActiveBrings = {}
+local IsBringing = false
 
--- Папка с мобами (Blox Fruits)
-local EnemiesFolder = workspace:FindFirstChild("Enemies") or workspace
-
--- Текущие состояния
-local bringConn       -- Heartbeat обновление
-local scanConn        -- ChildAdded/Removed слежение
-local magnetPart      -- Невидимый "магнит"
-local enemyNameKey    -- Имя текущей цели
-local attached = {}   -- mobModel -> {att, ap, ao}
-local candidates = {} -- список актуальных мобов (моделей)
-
--- Утилиты
-local function isAlive(model)
-    local hum = model:FindFirstChildOfClass("Humanoid")
-    return hum and hum.Health > 0 and hum.RootPart
-end
-
-local function normalize(s) return string.lower(tostring(s)) end
-
-local function nameMatches(mobName, want)
-    mobName, want = normalize(mobName), normalize(want)
-    -- точное ИЛИ частичное совпадение
-    return mobName == want or string.find(mobName, want, 1, true) ~= nil
-end
-
-local function ensureMagnet(atCFrame)
-    if magnetPart and magnetPart.Parent then return magnetPart end
-    magnetPart = Instance.new("Part")
-    magnetPart.Name = "BringMagnet"
-    magnetPart.Anchored = true
-    magnetPart.CanCollide = false
-    magnetPart.CanQuery = false
-    magnetPart.CanTouch = false
-    magnetPart.Transparency = 1
-    magnetPart.Size = Vector3.new(1,1,1)
-    magnetPart.CFrame = atCFrame or CFrame.new(0, 1000, 0)
-    magnetPart.Parent = workspace
-    return magnetPart
-end
-
-local function attachMob(mob)
-    if attached[mob] then return end
-    local hum = mob:FindFirstChildOfClass("Humanoid")
-    local root = hum and hum.RootPart
+-- создать привязку моба
+local function AttachMob(mob)
+    if ActiveBrings[mob] then return end
+    local root = mob:FindFirstChild("HumanoidRootPart")
     if not root then return end
 
-    -- Ставим Noclip на рут (чтобы не пинались)
-    pcall(function() root.CanCollide = false end)
-
     local att = Instance.new("Attachment")
-    att.Name = "Bring_Att"
     att.Parent = root
 
-    local ap = Instance.new("AlignPosition")
-    ap.Name = "Bring_AP"
-    ap.Mode = Enum.PositionAlignmentMode.OneAttachment
-    ap.Attachment0 = att
-    ap.MaxForce = 9e8
-    ap.Responsiveness = 200
-    ap.ApplyAtCenterOfMass = true
-    ap.Parent = root
+    local align = Instance.new("AlignPosition")
+    align.MaxForce = 999999999
+    align.Responsiveness = 200
+    align.ApplyAtCenterOfMass = true
+    align.Mode = Enum.PositionAlignmentMode.OneAttachment
+    align.Attachment0 = att
+    align.Parent = root
 
-    local ao = Instance.new("AlignOrientation")
-    ao.Name = "Bring_AO"
-    ao.Mode = Enum.OrientationAlignmentMode.OneAttachment
-    ao.Attachment0 = att
-    ao.MaxTorque = 9e8
-    ao.Responsiveness = 200
-    ao.Parent = root
-
-    attached[mob] = {att = att, ap = ap, ao = ao}
+    ActiveBrings[mob] = {att = att, align = align}
 end
 
-local function detachMob(mob)
-    local pack = attached[mob]
-    if not pack then return end
-    attached[mob] = nil
-    pcall(function() if pack.ao then pack.ao:Destroy() end end)
-    pcall(function() if pack.ap then pack.ap:Destroy() end end)
-    pcall(function() if pack.att then pack.att:Destroy() end end)
-end
-
-local function clearAll()
-    for mob,_ in pairs(attached) do
-        detachMob(mob)
-    end
-    attached = {}
-    if bringConn then bringConn:Disconnect() bringConn = nil end
-    if scanConn  then scanConn:Disconnect()  scanConn  = nil end
-    if magnetPart then Debris:AddItem(magnetPart, 0) magnetPart = nil end
-end
-
--- Поддерживаем актуальный список кандидатов, без тяжёлых сканов
-local function resubscribeEnemiesFolder()
-    -- начальная загрузка
-    candidates = {}
-    for _,child in ipairs(EnemiesFolder:GetChildren()) do
-        if child:IsA("Model") then
-            candidates[child] = true
-        end
-    end
-    -- подписки
-    if scanConn then scanConn:Disconnect() scanConn = nil end
-    scanConn = EnemiesFolder.ChildAdded:Connect(function(ch)
-        if ch:IsA("Model") then candidates[ch] = true end
-    end)
-    EnemiesFolder.ChildRemoved:Connect(function(ch)
-        candidates[ch] = nil
-        detachMob(ch)
-    end)
-end
-
-local function pickAnchorCFrame()
-    -- Якорь = ближайший живой моб нужного имени; если нет — позиция игрока
-    local hrp = getHRP()
-    local bestCFrame
-    local bestDist = math.huge
-
-    for mob,_ in pairs(candidates) do
-        if mob.Parent and nameMatches(mob.Name, enemyNameKey) and isAlive(mob) then
-            local root = mob.Humanoid.RootPart
-            local dist = hrp and (root.Position - hrp.Position).Magnitude or math.huge
-            if dist < bestDist then
-                bestDist = dist
-                bestCFrame = root.CFrame
-            end
-        end
-    end
-
-    if bestCFrame then
-        return bestCFrame + Vector3.new(0, 3, 0) -- чуть выше, чтобы не тонуло в земле
-    elseif hrp then
-        return hrp.CFrame + Vector3.new(0, 3, 0)
-    else
-        return CFrame.new(0,1000,0)
+-- чистка привязки
+local function DetachMob(mob)
+    local stuff = ActiveBrings[mob]
+    if stuff then
+        if stuff.att then stuff.att:Destroy() end
+        if stuff.align then stuff.align:Destroy() end
+        ActiveBrings[mob] = nil
     end
 end
 
--- Основной Heartbeat
-local function startHeartbeat()
-    if bringConn then bringConn:Disconnect() bringConn = nil end
-    bringConn = RunService.Heartbeat:Connect(function()
-        if not enemyNameKey then return end
-
-        -- фикс симрадиуса (мягко)
-        pcall(function()
-            sethiddenproperty(LocalPlayer, "SimulationRadius", 1e9)
-        end)
-
-        -- держим магнит в якорной точке
-        local anchor = pickAnchorCFrame()
-        ensureMagnet(anchor).CFrame = anchor
-
-        -- прикрепляем нужных, отцепляем лишних
-        for mob,_ in pairs(candidates) do
-            if mob.Parent and nameMatches(mob.Name, enemyNameKey) and isAlive(mob) then
-                attachMob(mob)
+-- главный цикл
+local function BringLoop(enemyName)
+    IsBringing = true
+    while IsBringing and BringCFrame do
+        for _, mob in ipairs(Enemies:GetChildren()) do
+            if mob.Name == enemyName and mob:FindFirstChild("Humanoid") and mob.Humanoid.Health > 0 then
+                AttachMob(mob)
+                local stuff = ActiveBrings[mob]
+                if stuff and stuff.align then
+                    stuff.align.Position = BringCFrame.Position
+                end
             else
-                detachMob(mob)
+                DetachMob(mob)
             end
         end
+        RunService.Heartbeat:Wait()
+    end
+    -- очистка после выхода
+    for mob, _ in pairs(ActiveBrings) do
+        DetachMob(mob)
+    end
+end
 
-        -- подаём цель всем прикреплённым
-        local targetPos = magnetPart and magnetPart.Position
-        local targetCFr = magnetPart and magnetPart.CFrame
-        if targetPos and targetCFr then
-            for mob, pack in pairs(attached) do
-                local ok = mob.Parent and pack and pack.ap and pack.ao
-                if ok then
-                    pack.ap.Position = targetPos
-                    pack.ao.CFrame = targetCFr
-                else
-                    detachMob(mob)
+-- публичные функции
+function StartBringMobs(enemyName)
+    local anchor = nil
+    local closestDist = math.huge
+    local player = game.Players.LocalPlayer
+    local root = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+    if not root then return end
+
+    -- выбираем ближайшего моба
+    for _, mob in ipairs(Enemies:GetChildren()) do
+        if mob.Name == enemyName and mob:FindFirstChild("Humanoid") and mob.Humanoid.Health > 0 then
+            local mobRoot = mob:FindFirstChild("HumanoidRootPart")
+            if mobRoot then
+                local dist = (mobRoot.Position - root.Position).Magnitude
+                if dist < closestDist then
+                    closestDist = dist
+                    anchor = mobRoot
                 end
             end
         end
-    end)
-end
-
--- Публичное API
-function StartBringMobs(name)
-    if type(name) ~= "string" then
-        warn('Передай имя строкой: StartBringMobs("Bandit")')
-        return
-    end
-    enemyNameKey = name
-    resubscribeEnemiesFolder()
-
-    -- проверим, что есть хотя бы один подходящий моб
-    local any = false
-    for mob,_ in pairs(candidates) do
-        if mob.Parent and nameMatches(mob.Name, enemyNameKey) and isAlive(mob) then
-            any = true break
-        end
-    end
-    if not any then
-        warn("Нет подходящих мобов: " .. tostring(name) .. '. Попробуй, например: StartBringMobs("Bandit")')
-        -- всё равно запускаем — как только появятся, начнёт тянуть
     end
 
-    ensureMagnet(pickAnchorCFrame())
-    startHeartbeat()
+    if anchor then
+        BringCFrame = anchor.CFrame
+        task.spawn(function()
+            BringLoop(enemyName)
+        end)
+    else
+        warn("Нет подходящих мобов")
+    end
 end
 
 function StopBringMobs()
-    enemyNameKey = nil
-    clearAll()
+    IsBringing = false
+    BringCFrame = nil
 end
-
-
 StartBringMobs("Bandit")
-wait(30)
-StopBringMobs()
+
