@@ -86,7 +86,7 @@ function StartBringMobs(enemyName)
             BringLoop(enemyName)
         end)
     else
-        warn("Нет подходящих мобов")
+        print("Нет подходящих мобов")
     end
 end
 
@@ -95,5 +95,6 @@ function StopBringMobs()
     BringCFrame = nil
 end
 
-StartBringMobs("Bandit")
+StartBringMobs(Bandit)
+
 
